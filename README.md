@@ -12,9 +12,10 @@ in the Codex app/TUI.
 | Path | Role |
 | --- | --- |
 | `scripts/ultracode-engine.js` | Orchestration engine: worker spawning, primitives, usage/budget, journaled state. No npm deps. |
+| `scripts/ultracode-script-runner.js` | Opt-in imperative [Workflow scripts](#workflow-scripts) runner (`runScript`): binds the engine primitives into a bound script scope. **Runs arbitrary in-process Node — not a sandbox.** |
 | `scripts/app-server-client.js` | Dependency-free `codex app-server` JSON-RPC client for the opt-in `transport: 'app-server'` worker path (handshake, lenient bare-JSON-RPC framing, usage normalization). |
-| `mcp/server.js` | Hand-rolled MCP stdio server exposing `ultracode_plan` / `ultracode_run` / `ultracode_pipeline` / `ultracode_resume` / `ultracode_status`. Emits `notifications/progress` when a `tools/call` supplies `_meta.progressToken`. |
-| `scripts/ultracode-cli.js` | CLI over the same engine (`plan` / `run` / `pipeline` / `resume` / `status`). |
+| `mcp/server.js` | Hand-rolled MCP stdio server exposing `ultracode_plan` / `ultracode_run` / `ultracode_pipeline` / `ultracode_resume` / `ultracode_status` / `ultracode_script` (gated). Emits `notifications/progress` for `ultracode_run` / `ultracode_pipeline` / `ultracode_script` when a `tools/call` supplies `_meta.progressToken`. Auto-detects LSP `Content-Length` framing vs. newline-delimited JSON. |
+| `scripts/ultracode-cli.js` | CLI over the same engine (`plan` / `run` / `pipeline` / `resume` / `status` / `script`). |
 | `scripts/run-node-tool.sh` | POSIX launcher that resolves Node + Codex and runs the MCP server or prompt hook. |
 | `hooks/` | `UserPromptSubmit` hook that injects Ultracode guidance when a prompt mentions "ultracode". |
 | `skills/ultracode/SKILL.md` | Usage guidance for the model. |
@@ -41,15 +42,23 @@ of `codex exec` subprocesses:
 | Quality: loop-until-dry | `loopUntilDry(makePrompt, opts)` / `ultracode_pipeline` `kind:loop` | ✅ |
 | Quality: adversarial / perspective-diverse verify | `adversarialVerify(findings, {skeptics, lenses})` / `ultracode_pipeline` `kind:verify` | ✅ |
 | `isolation: 'worktree'` for parallel writers | `spawnWorker({isolation:'worktree'})` (git worktree + diff capture) | ✅ |
-| `args` threaded to stages | stage callbacks receive `(prev, item, index, ctx)` | ✅ † |
+| `args` threaded to stages | `args` in the script scope + stage callbacks receive `(prev, item, index, ctx)` | ✅ |
+| Imperative `agent()` / `parallel()` / `pipeline()` / `phase()` / `log()` / `budget` script | **`ultracode_script` MCP tool + `ultracode-cli.js script`** (the [_Workflow scripts_](#workflow-scripts) runner) | ✅ |
 | `workflow()` nested sub-step | one-level nesting enforced via `ULTRACODE_DEPTH` depth guard (deeper nesting refused + logged) | ◐ partial |
 
-**† Engine-API only.** These primitives are exported from `scripts/ultracode-engine.js` for scripted
-orchestration (see _Scripted orchestration_ below). `ultracode_run` itself exposes only the fixed-role and
-`workers_spec` flat fan-out (all peers at once, no data flow). The DAG-shaped primitives —
-`parallel` / `pipeline` / `verify` / `loop` — are now also driveable as pure JSON through the new
-`ultracode_pipeline` MCP tool (and `ultracode-cli.js pipeline`), which compiles a declarative `steps[]` DAG into
-those primitives. All paths run through the shared limiter, budget, and progress sink.
+**Reachability.** Every primitive above is exported from `scripts/ultracode-engine.js` and is now reachable
+through three layered surfaces, in increasing order of expressiveness:
+
+1. **`ultracode_run`** — the fixed-role and `workers_spec` flat fan-out (all peers at once, no data flow).
+2. **`ultracode_pipeline`** — a declarative `steps[]` DAG that compiles `parallel` / `pipeline` / `verify` / `loop`
+   into the engine primitives with token-substitution edges between steps.
+3. **`ultracode_script` / `ultracode-cli.js script`** — the imperative [_Workflow scripts_](#workflow-scripts)
+   runner: plain async JavaScript with `agent()`, `parallel()`, `pipeline()`, `phase()`, `log()`, `budget`, and
+   `args` bound into scope. This is the closest analogue to Claude Code's in-process Workflow tool and is the only
+   surface that combines the primitives with arbitrary host-side control flow and reductions.
+
+All three paths run through the same shared limiter, budget, and progress sink. The `pipeline()` / `parallel()` /
+`args`-to-stages rows that were previously engine-API-only are now reachable end-to-end via the script runner.
 
 ### Declarative pipeline DAG (`ultracode_pipeline`)
 
@@ -137,6 +146,7 @@ node scripts/ultracode-cli.js run    --workers-spec '[{"prompt":"...","label":"a
 node scripts/ultracode-cli.js pipeline --steps '[{"id":"a","prompt":"..."},{"id":"b","prompt":"use {{steps.a.summary}}","depends_on":["a"]}]' --progress
 node scripts/ultracode-cli.js resume --workflow-id ultra-... --force-steps '["1"]'
 node scripts/ultracode-cli.js status --workflow-id ultra-...
+node scripts/ultracode-cli.js script <path> --args '{"files":["a.js"]}'   # imperative Workflow script (see below)
 ```
 
 ### Scripted orchestration
@@ -155,6 +165,157 @@ const results = await uc.runPipeline(
   { ctx }
 );
 ```
+
+## Workflow scripts
+
+`ultracode_script` (MCP) and `node scripts/ultracode-cli.js script` (CLI) run an **imperative workflow script** —
+the Codex analogue of Claude Code's in-process Workflow tool. Instead of a declarative `steps[]` DAG, you write
+plain async JavaScript and the engine's orchestration primitives are pre-bound into the script scope, so a
+multi-agent workflow reads like ordinary code with `await`, `map`/`filter`/`sort`, and arbitrary host-side
+reductions between agent calls.
+
+> ### ⚠️ SECURITY — this is NOT a sandbox
+>
+> A workflow script executes **arbitrary Node.js IN-PROCESS** in the host (the MCP server or the CLI) with
+> **full host privileges**. The bound scope is purely ergonomic and provides **no isolation whatsoever**. A
+> script can `require()` any module, read/write any file the host user can, read `process.env` (including Codex
+> API keys/tokens, `CODEX_HOME`, and every inherited secret), call `process.exit`, open network sockets, and
+> spawn Codex workers that run shell (it may even request `sandbox: 'workspace-write'` / `'danger-full-access'`
+> per call). **Trust level is exactly equal to `node <file>.js`** — whoever can author or point at a script can
+> already run code as the host user.
+>
+> Because of this:
+>
+> - **MCP `ultracode_script` is DISABLED by default.** It refuses unless the environment variable
+>   **`ULTRACODE_ALLOW_SCRIPT=1`** is set for the MCP server process. When disabled it returns an `isError`
+>   content result naming the env var (it does **not** throw and spawns nothing). When enabled, it **prefers an
+>   operator-controlled file `path`** over inline `source`; inline `source` is only accepted while the flag is
+>   set. Set `ULTRACODE_ALLOW_SCRIPT=1` only on an MCP server you fully trust — a client that can reach an
+>   enabled server has RCE-as-host-user.
+> - **CLI `script <path>` is allowed by default** (an env gate there would be theater: you already ran a local
+>   file from your own shell, identical trust to `node <path>`).
+> - The persisted run record (under `$CODEX_HOME/ultracode/runs`) and `events[]` may capture whatever the script
+>   logs/returns and whatever a worker prints to stderr — **treat those files as sensitive.** The runner never
+>   auto-dumps `process.env`.
+> - The bound caps (one shared concurrency limiter, `budget_tokens` gate, `max_agents` lifetime cap, and the
+>   `ULTRACODE_DEPTH` nesting guard) bound the blast radius of the **workers** a script spawns, but a trusted
+>   script still chooses its own budget and may pass `danger-full-access` per call — by design.
+> - No `vm` / `child_process` / `worker_threads` isolation layer exists today; true isolation is noted as
+>   future hardening.
+
+### API surface
+
+`runScript(input)` — exported from `scripts/ultracode-script-runner.js` — resolves to a journaled record. `input`:
+
+| Field | Meaning |
+| --- | --- |
+| `source` **xor** `path` | the script body inline, **or** a path to a `.js`/`.workflow.js` file. Exactly one is required (both/neither throws). `path` is read by **contents** (dirname-independent). |
+| `args` | arbitrary object exposed to the script as the bound `args`. |
+| `cwd` | workspace directory for child workers. |
+| `concurrency` / `budget_tokens` / `max_agents` | the shared limiter / soft token cap / lifetime spawn cap (same semantics as `ultracode_run`). |
+| `max_retries` / `base_delay_ms` / `max_delay_ms` / `retry_jitter` | journaled into `options`. |
+| `signal` / `on_event` | abort signal and progress sink (wired by the CLI's Ctrl-C and the MCP progress token). |
+| `codex_bin` / `codex_home` | spawn defaults threaded into every agent. |
+
+**Bound script scope** (`ctx` is auto-injected into every primitive — you never pass it):
+
+| Binding | Behavior |
+| --- | --- |
+| `agent(prompt, opts?)` | spawns one worker and returns its `value` on completion, else `null` (the failure is already logged). The ergonomic happy-path primitive. |
+| `spawnWorker(prompt, opts?)` | the raw engine call returning the full `{status, value, usage, thread_id, ...}` record (advanced). |
+| `parallel(thunks)` | barrier gather; a throwing thunk degrades to `null`. |
+| `pipeline(items, ...stages)` | **variadic** — each stage is a positional argument and receives `(prev, item, index, ctx)`; barrier-free streaming. |
+| `loopUntilDry(makePrompt, opts?)` | keep spawning finders until K dry rounds / budget / lifetime cap. |
+| `adversarialVerify(findings, opts?)` | keep only findings that survive a majority refute vote. |
+| `log(message, data?)` | narrator line into `events[]`. |
+| `phase(title)` | sets a closure-tracked phase used as the default `phase` for subsequent `agent()`/`spawnWorker()`. |
+| `workflow(pathOrSource, args?)` | one-level **nested** `runScript`, guarded by `ULTRACODE_DEPTH`; beyond depth 1 it throws `nested script workflows beyond depth 1 are not supported`. |
+| `budget` | `{ total, spent(), remaining() }`. |
+| `args` | the `input.args` object. |
+| `ctx` | the shared context (advanced). |
+| `WORKER_SCHEMA` / `VERDICT_SCHEMA` | the engine schemas. |
+
+A script may use top-level `await` and a top-level `return` (the returned value becomes `record.result`). ES
+module sugar is tolerated by a small source transform: `export default <expr>` becomes the captured return value,
+and a leading `export const|let|var|async|function|class` is stripped to the bare declaration (so a
+`.workflow.js` file is editor-friendly). A `"use strict";` prelude is prepended as hygiene (an undeclared
+assignment throws instead of leaking a host global). **Note:** because the body is wrapped in an `AsyncFunction`,
+a journaled `error` line/position is offset from the original file — the message is still accurate but line
+numbers will not match the source.
+
+### Returned record
+
+```jsonc
+{ "id": "ultra-<stamp>-<hex>", "kind": "script", "status": "completed" /* | "failed" */,
+  "started_at": "...", "completed_at": "...", "duration_ms": 0, "cwd": "...",
+  "options": { "concurrency": 4, "budget_tokens": null, "max_agents": 1000,
+               "max_retries": null, "base_delay_ms": null, "max_delay_ms": null, "retry_jitter": null },
+  "state_path": "$CODEX_HOME/ultracode/runs/ultra-....json",
+  "workers": [],            // always [] — a script record is not step-resumable
+  "result": { /* the script's return value */ },
+  "events": [ /* narrator log */ ],
+  "aggregate_usage": { /* cross-worker token totals */ },
+  "error": "<message, only when status:failed>" }
+```
+
+A throwing or syntactically broken script never crashes the host: execution is wrapped in `try`/`catch`, so the
+record is journaled with `status: "failed"`, the `error` message, and the partial `events` written so far. The
+record is read by `ultracode_status` (and `readWorkflow`) unchanged; `ultracode_resume` degrades to a clean
+"nothing to resume" message because `workers` is `[]` (a script is not step-resumable).
+
+### Example (mirroring a Claude workflow)
+
+A fan-out → filter → reduce pass, the imperative shape of a Claude `parallel()` workflow
+(see `examples/parallel-reduce.workflow.js`):
+
+```js
+// inspect.workflow.js
+const files = args.files;            // injected via --args / the `args` MCP field
+
+phase("inspect");
+log(`fanning out over ${files.length} file(s)`, { count: files.length });
+
+// one agent per file, all bounded by the shared concurrency limiter;
+// agent() resolves to the structured value (or null on failure)
+const reports = await parallel(
+  files.map((file) => () => agent(`Inspect ${file}; report a one-line summary and a confidence.`))
+);
+
+// arbitrary host-side reduction between agent calls
+const rank = { high: 0, medium: 1, low: 2 };
+const reduced = reports
+  .map((r, i) => (r ? { file: files[i], ...r } : null))
+  .filter(Boolean)
+  .sort((a, b) => (rank[a.confidence] ?? 9) - (rank[b.confidence] ?? 9));
+
+export default { inspected: files.length, kept: reduced.length, reports: reduced };
+```
+
+Drive it via the CLI (allowed by default), or via MCP once the gate is set:
+
+```bash
+# CLI — allowed by default (positional <path>, or --path / --source / --args; Ctrl-C aborts)
+node scripts/ultracode-cli.js script examples/parallel-reduce.workflow.js \
+  --args '{"files":["src/a.js","src/b.js","src/c.js"]}' --concurrency 3
+
+# Free dry run against the mock codex
+CODEX_CLI_PATH=test/fixtures/mock-codex.js \
+node scripts/ultracode-cli.js script examples/parallel-reduce.workflow.js \
+  --args '{"files":["a.js","b.js"]}'
+```
+
+```jsonc
+// MCP — DISABLED unless ULTRACODE_ALLOW_SCRIPT=1 on the server; prefers `path` over `source`
+{ "name": "ultracode_script", "arguments": {
+  "path": "examples/parallel-reduce.workflow.js",
+  "args": { "files": ["src/a.js", "src/b.js"] },
+  "concurrency": 3
+}}
+```
+
+The MCP tool accepts exactly `{ path?, source?, args?, cwd?, concurrency?, budget_tokens?, max_agents? }`
+(`additionalProperties: false`). A second example, `examples/budget-loop.workflow.js`, shows a
+`budget`-bounded `loopUntilDry` discovery surfacing `budget.spent()` / `budget.remaining()`.
 
 ### Warm-context workers (opt-in)
 
@@ -242,8 +403,9 @@ Notes:
 
 ### MCP progress notifications (opt-in by the client)
 
-Per the MCP spec, a `tools/call` request MAY carry `_meta.progressToken`. When `ultracode_run` or `ultracode_pipeline`
-is called with one, the server emits `notifications/progress` on the same connection until it returns the final result:
+Per the MCP spec, a `tools/call` request MAY carry `_meta.progressToken`. When `ultracode_run`, `ultracode_pipeline`,
+or `ultracode_script` is called with one, the server emits `notifications/progress` on the same connection until it
+returns the final result (`ultracode_plan` / `ultracode_resume` / `ultracode_status` are fast and unwired):
 
 ```jsonc
 { "method": "notifications/progress",
@@ -253,6 +415,45 @@ is called with one, the server emits `notifications/progress` on the same connec
 `progress` is a monotonically increasing integer (`total` is omitted when unknown). The notifications mirror the
 engine's existing `on_event` stream (the same sink the CLI's `--progress` flag uses). When no `progressToken` is
 supplied, **zero** progress notifications are emitted and the result is identical to before.
+
+## Testing & development
+
+The engine and runners have **no npm dependencies**, so the test suite runs on the Node built-in test runner with
+no install step. Tests never call real Codex — every spawn is redirected at a **mock** Codex binary, so the whole
+suite (and the example workflows below) runs **offline and free**.
+
+```bash
+npm test                              # node --test "test/**/*.test.js" (all 23 *.test.js files)
+node --test "test/**/*.test.js"       # the same, without the package.json script
+node --test test/script-runner.test.js   # run a single test file
+```
+
+The suite covers the limiter, schema validation/retry, `spawnWorker`, workflow / resume / pipeline, retry &
+cancel, warm-context, the app-server transport, MCP progress, the script runner, and CLI SIGINT handling.
+
+**Running CLI commands and example workflows for free.** Point `CODEX_CLI_PATH` at the mock Codex binary
+(`test/fixtures/mock-codex.js`, with `mock-codex-fail.js` for the failure path) and use a throwaway `CODEX_HOME`
+so the run never touches your real `~/.codex`:
+
+```bash
+CODEX_HOME=$(mktemp -d) CODEX_CLI_PATH=test/fixtures/mock-codex.js \
+  node scripts/ultracode-cli.js script examples/parallel-reduce.workflow.js \
+  --args '{"files":["a.js","b.js"]}'
+
+CODEX_HOME=$(mktemp -d) CODEX_CLI_PATH=test/fixtures/mock-codex.js \
+  node scripts/ultracode-cli.js script examples/budget-loop.workflow.js \
+  --budget-tokens 5000 --max-agents 6 --concurrency 2
+```
+
+The `examples/` directory ships two ready-to-run scripts: `parallel-reduce.workflow.js` (a fan-out → filter →
+reduce pass) and `budget-loop.workflow.js` (a `budget`-bounded `loopUntilDry` that surfaces `budget.spent()` /
+`budget.remaining()`). The mock honors `MOCK_CODEX_*` env knobs (e.g. `MOCK_CODEX_RESPONSE`, `MOCK_CODEX_EXIT`,
+`MOCK_CODEX_SLEEP_MS`, `MOCK_CODEX_FAIL_TIMES`) — see `test/fixtures/mock-codex.js` and `test/helpers/env.js`.
+
+> **Operational note.** The stdio MCP server exits when its stdin reaches `end`. A real client keeps the
+> connection open for the lifetime of the call, but a naïve one-shot pipe that closes stdin immediately can cut
+> off an in-flight async `tools/call` (`ultracode_run` / `ultracode_pipeline` / `ultracode_script`) before its
+> result is written — keep stdin open until the response arrives.
 
 ## State
 
@@ -274,4 +475,11 @@ command, or engine export. The `workers_spec` and fixed-role paths are byte-for-
 
 The warm-context executor (`executor`, `spawnWarmWorker`, `runPipeline.warm`) is likewise additive and opt-in: it
 defaults to the cold ephemeral fan-out and falls back to it on any resume failure, so existing flows are unaffected.
+
+The `ultracode_script` MCP tool and the CLI `script` command are purely additive: the five prior MCP tools and the
+existing CLI commands keep byte-identical schemas/contracts, and `ultracode_script` is added with
+`additionalProperties: false`. The MCP tool refuses unless `ULTRACODE_ALLOW_SCRIPT=1`, and the engine only gains a
+single lazy `runScript` re-export (call-time `require`, no require cycle), so existing engine exports are unchanged.
+Script records (`kind: "script"`) journal into the same `$CODEX_HOME/ultracode/runs/` directory and are read by
+`ultracode_status` unchanged; `ultracode_resume` returns a clean no-op message for them (they carry `workers: []`).
 ```
