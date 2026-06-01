@@ -1,7 +1,27 @@
 {
-  "name": "ultracode",
-  "private": true,
+  "name": "@just-every/plugins",
+  "version": "0.1.0",
+  "description": "Just Every Codex plugin marketplace.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/just-every/plugins.git"
+  },
+  "keywords": [
+    "codex",
+    "plugins",
+    "marketplace",
+    "just-every"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    ".agents/plugins/marketplace.json",
+    "README.md"
+  ],
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "npm run validate:catalog",
+    "validate:catalog": "python3 -m json.tool .agents/plugins/marketplace.json > /dev/null"
   }
 }

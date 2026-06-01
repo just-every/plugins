@@ -1,0 +1,21 @@
+{
+  "name": "just-every",
+  "interface": {
+    "displayName": "Just Every"
+  },
+  "plugins": [
+    {
+      "name": "ultracode",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/just-every/plugin-ultracode.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
