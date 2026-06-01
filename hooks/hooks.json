@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/scripts/run-node-tool.sh\" prompt-hook",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

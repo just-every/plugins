@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ultracode": {
+      "command": "/bin/sh",
+      "args": [
+        "./scripts/run-node-tool.sh",
+        "mcp"
+      ],
+      "cwd": "."
+    }
+  }
+}

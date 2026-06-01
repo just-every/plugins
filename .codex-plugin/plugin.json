@@ -1,0 +1,34 @@
+{
+  "name": "ultracode",
+  "version": "0.1.0+codex.20260531212304",
+  "description": "Fan out Codex subprocess workers for deep code investigation, planning, and review.",
+  "author": {
+    "name": "Local developer"
+  },
+  "keywords": [
+    "codex",
+    "subagents",
+    "parallel",
+    "workflow",
+    "code-review"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Ultracode",
+    "shortDescription": "Run parallel Codex worker workflows",
+    "longDescription": "Ultracode gives Codex a subprocess-backed workflow engine for parallel read-only investigation, planning, and verification. Worker results are returned to the parent thread for visible synthesis and implementation.",
+    "developerName": "Local developer",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use Ultracode to investigate this change",
+      "Run parallel Codex workers on this bug",
+      "Review this plan with Ultracode"
+    ],
+    "brandColor": "#2563EB"
+  },
+  "mcpServers": "./.mcp.json"
+}
