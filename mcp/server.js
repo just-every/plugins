@@ -31,12 +31,14 @@ const tools = [
   {
     name: "ultracode_run",
     description:
-      "Run Codex subprocess workers in parallel and return structured fan-out findings to the parent thread.",
+      "Run Codex subprocess workers in parallel and return structured fan-out findings to the parent thread. " +
+      "Supply `task` for the default fixed-role fan-out, or `workers_spec` for arbitrary per-worker prompts and schemas " +
+      "(the agent()-style parity path). Concurrency is capped, token usage is aggregated, and a token budget can gate spawns.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        task: { type: "string", description: "The objective to fan out across workers." },
+        task: { type: "string", description: "The objective to fan out across workers. Required unless workers_spec is given." },
         cwd: { type: "string", description: "Workspace directory for child workers." },
         workers: { type: "integer", minimum: 1, maximum: engine.MAX_WORKERS },
         sandbox: {
@@ -48,9 +50,67 @@ const tools = [
         reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
         timeout_ms: { type: "integer", minimum: 1000 },
         codex_bin: { type: "string", description: "Optional Codex binary path." },
-        codex_home: { type: "string", description: "Optional CODEX_HOME for child workers." }
-      },
-      required: ["task"]
+        codex_home: { type: "string", description: "Optional CODEX_HOME for child workers." },
+        concurrency: {
+          type: "integer",
+          minimum: 1,
+          description: "Max simultaneous Codex subprocesses. Defaults to min(16, cores-2)."
+        },
+        budget_tokens: {
+          type: "integer",
+          minimum: 0,
+          description: "Optional total token ceiling. New workers are skipped (and logged) once exceeded."
+        },
+        max_agents: {
+          type: "integer",
+          minimum: 1,
+          description: "Lifetime cap on spawned workers for this run. Defaults to 1000."
+        },
+        workers_spec: {
+          type: "array",
+          description:
+            "Explicit per-worker specs (arbitrary prompt + optional per-worker schema). When present, replaces the fixed-role fan-out.",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              prompt: { type: "string", description: "The worker's full prompt." },
+              label: { type: "string", description: "Display label for progress/aggregation." },
+              schema: {
+                type: ["object", "null"],
+                description: "Optional JSON Schema for this worker's output. Omit for the default schema; pass null for raw text."
+              },
+              sandbox: { type: "string", enum: ["read-only", "workspace-write", "danger-full-access"] },
+              model: { type: "string" },
+              reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+              phase: { type: "string", description: "Optional phase label for grouping." },
+              timeout_ms: { type: "integer", minimum: 1000 },
+              cwd: { type: "string" },
+              isolation: { type: "string", enum: ["worktree"], description: "Run this writable worker in an isolated git worktree." }
+            },
+            required: ["prompt"]
+          }
+        }
+      }
+    }
+  },
+  {
+    name: "ultracode_resume",
+    description:
+      "Resume a persisted Ultracode workflow by id: completed steps are reused from the journal and only missing, failed, " +
+      "or explicitly forced steps are re-run, then results are re-aggregated.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        workflow_id: { type: "string", description: "Workflow id to resume." },
+        state_path: { type: "string", description: "Explicit state file path (alternative to workflow_id)." },
+        force_steps: {
+          type: "array",
+          items: { type: "string" },
+          description: "Step ids / role ids / indices to force re-run even if already completed."
+        }
+      }
     }
   },
   {
@@ -106,6 +166,9 @@ async function callTool(name, args) {
   }
   if (name === "ultracode_run") {
     return contentResult(await engine.runWorkflow(args || {}));
+  }
+  if (name === "ultracode_resume") {
+    return contentResult(await engine.resumeWorkflow(args || {}));
   }
   if (name === "ultracode_status") {
     return contentResult(await engine.readWorkflow(args || {}));

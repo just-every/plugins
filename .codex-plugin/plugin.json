@@ -1,7 +1,7 @@
 {
   "name": "ultracode",
-  "version": "0.1.0+codex.20260531212304",
-  "description": "Fan out Codex subprocess workers for deep code investigation, planning, and review.",
+  "version": "0.2.0+codex.20260601",
+  "description": "Fan out Codex subprocess workers for deep code investigation, planning, and review, with Claude-Workflow-style pipelines, budgets, and journaled resume.",
   "author": {
     "name": "Local developer"
   },
@@ -9,7 +9,10 @@
     "codex",
     "subagents",
     "parallel",
+    "pipeline",
     "workflow",
+    "budget",
+    "resume",
     "code-review"
   ],
   "skills": "./skills/",
