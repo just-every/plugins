@@ -66,6 +66,37 @@ const tools = [
           minimum: 1,
           description: "Lifetime cap on spawned workers for this run. Defaults to 1000."
         },
+        max_retries: {
+          type: "integer",
+          minimum: 0,
+          description:
+            "Transient-error retries per worker (classified: HTTP 429/5xx, rate-limit, network). Defaults to 0 (no retry)."
+        },
+        base_delay_ms: {
+          type: "integer",
+          minimum: 0,
+          description: "Base backoff delay for transient retries. Defaults to 500."
+        },
+        max_delay_ms: {
+          type: "integer",
+          minimum: 0,
+          description: "Max backoff delay cap for transient retries. Defaults to 30000."
+        },
+        retry_jitter: {
+          type: "boolean",
+          description: "Apply full-jitter to backoff delays. Defaults to true."
+        },
+        transport: {
+          type: "string",
+          enum: ["exec", "app-server", "exec-server"],
+          description:
+            "Worker transport. 'exec' (default) shells `codex exec --json`. 'app-server' uses the opt-in versioned " +
+            "JSON-RPC app-server (auto-falls-back to exec on failure). 'exec-server' is reserved (not yet implemented)."
+        },
+        transport_strict: {
+          type: "boolean",
+          description: "When true, an app-server failure errors instead of falling back to exec. Defaults to false."
+        },
         workers_spec: {
           type: "array",
           description:
@@ -89,6 +120,91 @@ const tools = [
               isolation: { type: "string", enum: ["worktree"], description: "Run this writable worker in an isolated git worktree." }
             },
             required: ["prompt"]
+          }
+        }
+      }
+    }
+  },
+  {
+    name: "ultracode_pipeline",
+    description:
+      "Run a declarative DAG of Codex worker stages described as pure JSON. Each step has an id, a kind " +
+      "(worker | parallel | verify | loop), a prompt template, and optional depends_on edges. Steps run " +
+      "barrier-free: each starts the instant its own dependencies resolve. Cross-stage data flows by rendering " +
+      "{{steps.<id>.output}} / {{steps.<id>.output.<path>}} / {{steps.<id>.summary}} tokens (plus {{round}} for " +
+      "loop, {{item.<key>}} for parallel) into the dependent prompt. verify wraps adversarialVerify over an " +
+      "upstream findings array; loop wraps loopUntilDry. Produces the same journaled record as ultracode_run.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["steps"],
+      properties: {
+        cwd: { type: "string" },
+        sandbox: { type: "string", enum: ["read-only", "workspace-write", "danger-full-access"] },
+        model: { type: "string" },
+        reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+        timeout_ms: { type: "integer", minimum: 1000 },
+        codex_bin: { type: "string" },
+        codex_home: { type: "string" },
+        concurrency: { type: "integer", minimum: 1 },
+        budget_tokens: { type: "integer", minimum: 0 },
+        max_agents: { type: "integer", minimum: 1 },
+        max_retries: { type: "integer", minimum: 0 },
+        base_delay_ms: { type: "integer", minimum: 0 },
+        max_delay_ms: { type: "integer", minimum: 0 },
+        retry_jitter: { type: "boolean" },
+        transport: {
+          type: "string",
+          enum: ["exec", "app-server", "exec-server"],
+          description:
+            "Default worker transport for every step. 'exec' (default) | 'app-server' (opt-in JSON-RPC, falls back) | " +
+            "'exec-server' (reserved)."
+        },
+        transport_strict: { type: "boolean" },
+        executor: {
+          type: "string",
+          enum: ["cold", "resume", "fork"],
+          description:
+            "Default warm executor for every step. 'cold' (default) = independent cold execs. 'resume' keeps a Codex " +
+            "session warm across turns. 'fork' is a forward-compat stub that degrades to cold (codex fork is TUI-only)."
+        },
+        task: { type: "string" },
+        steps: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id"],
+            properties: {
+              id: { type: "string" },
+              kind: { type: "string", enum: ["worker", "parallel", "verify", "loop"] },
+              prompt: { type: "string" },
+              schema: { type: ["object", "null"] },
+              depends_on: { type: "array", items: { type: "string" } },
+              label: { type: "string" },
+              phase: { type: "string" },
+              sandbox: { type: "string", enum: ["read-only", "workspace-write", "danger-full-access"] },
+              model: { type: "string" },
+              reasoning_effort: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+              timeout_ms: { type: "integer", minimum: 1000 },
+              cwd: { type: "string" },
+              isolation: { type: "string", enum: ["worktree"] },
+              executor: {
+                type: "string",
+                enum: ["cold", "resume", "fork"],
+                description: "Per-step warm executor override. Defaults to the top-level executor (cold)."
+              },
+              findings_from: { type: "string" },
+              findings_path: { type: "string" },
+              skeptics: { type: "integer", minimum: 1 },
+              lenses: { type: "array", items: { type: "string" } },
+              context: { type: "string" },
+              dry_rounds: { type: "integer", minimum: 1 },
+              max_rounds: { type: "integer", minimum: 1 },
+              fanout: { type: "integer", minimum: 1 },
+              items: { type: "array", items: { type: "object" } }
+            }
           }
         }
       }
@@ -160,12 +276,45 @@ function contentResult(value, isError = false) {
   };
 }
 
-async function callTool(name, args) {
+// Build an on_event progress emitter for a tools/call carrying an MCP
+// _meta.progressToken. Per the MCP spec, the server MAY send
+// `notifications/progress` {progressToken, progress, total?, message?} on the
+// same connection until it returns the final result; `progress` MUST be
+// monotonically increasing. We use a per-call integer counter and omit `total`
+// (unknown). When no progressToken is supplied, callers pass undefined and the
+// engine receives no on_event — byte-for-byte identical to before.
+function makeProgressEmitter(progressToken) {
+  if (progressToken === undefined || progressToken === null) return undefined;
+  let counter = 0;
+  return (event) => {
+    const parts = [event && event.type ? String(event.type) : "event"];
+    if (event && event.label) parts.push(String(event.label));
+    if (event && event.message) parts.push(String(event.message));
+    send({
+      jsonrpc: "2.0",
+      method: "notifications/progress",
+      params: {
+        progressToken,
+        progress: counter++,
+        message: parts.join(" ")
+      }
+    });
+  };
+}
+
+async function callTool(name, args, onEvent) {
   if (name === "ultracode_plan") {
     return contentResult(engine.planWorkflow(args || {}));
   }
   if (name === "ultracode_run") {
-    return contentResult(await engine.runWorkflow(args || {}));
+    // Only the long-running run tool wires progress; plan/status/resume are fast
+    // and unchanged. on_event is undefined unless the client supplied a token.
+    return contentResult(await engine.runWorkflow({ ...(args || {}), ...(onEvent ? { on_event: onEvent } : {}) }));
+  }
+  if (name === "ultracode_pipeline") {
+    return contentResult(
+      await engine.runPipelineSpec({ ...(args || {}), ...(onEvent ? { on_event: onEvent } : {}) })
+    );
   }
   if (name === "ultracode_resume") {
     return contentResult(await engine.resumeWorkflow(args || {}));
@@ -203,7 +352,12 @@ async function handle(message) {
   if (message.method === "tools/call") {
     try {
       const params = message.params || {};
-      sendResult(message.id, await callTool(params.name, params.arguments || {}));
+      // MCP progress: _meta.progressToken sits beside `arguments` on params. When
+      // present we emit notifications/progress on the same connection; when
+      // absent, onEvent is undefined and behavior is identical to before.
+      const progressToken = params._meta ? params._meta.progressToken : undefined;
+      const onEvent = makeProgressEmitter(progressToken);
+      sendResult(message.id, await callTool(params.name, params.arguments || {}, onEvent));
     } catch (error) {
       sendResult(message.id, contentResult(error instanceof Error ? error.message : String(error), true));
     }

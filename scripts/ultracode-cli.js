@@ -3,8 +3,17 @@
 
 const engine = require("./ultracode-engine");
 
-const NUMERIC_KEYS = new Set(["workers", "timeout_ms", "concurrency", "budget_tokens", "max_agents"]);
-const JSON_KEYS = new Set(["workers_spec", "force_steps"]);
+const NUMERIC_KEYS = new Set([
+  "workers",
+  "timeout_ms",
+  "concurrency",
+  "budget_tokens",
+  "max_agents",
+  "max_retries",
+  "base_delay_ms",
+  "max_delay_ms"
+]);
+const JSON_KEYS = new Set(["workers_spec", "force_steps", "steps"]);
 
 function parseArgs(argv) {
   const [command = "plan", ...rest] = argv;
@@ -51,6 +60,36 @@ function coerce(options) {
   return options;
 }
 
+// Run an engine call that supports cancellation, wiring a one-shot SIGINT
+// handler that aborts the in-flight run on the first Ctrl-C (the engine then
+// returns the partially-completed, persisted workflow which main() prints) and
+// hard-exits 130 on a second SIGINT. The handler is scoped to the awaited call
+// and removed afterwards so it never swallows Ctrl-C for plan/status. Opt out
+// with --no-cancel-on-sigint.
+async function runCancellable(fn, options) {
+  if (options.no_cancel_on_sigint || process.env.ULTRACODE_NO_SIGINT) {
+    return fn(options);
+  }
+  const controller = new AbortController();
+  let interrupts = 0;
+  const onSigint = () => {
+    interrupts += 1;
+    if (interrupts === 1) {
+      process.stderr.write("\n[ultracode] cancelling run (Ctrl-C again to force quit)...\n");
+      controller.abort("SIGINT");
+    } else {
+      process.stderr.write("\n[ultracode] force quit.\n");
+      process.exit(130);
+    }
+  };
+  process.on("SIGINT", onSigint);
+  try {
+    return await fn({ ...options, signal: controller.signal });
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
+}
+
 async function main() {
   const { command, options } = parseArgs(process.argv.slice(2));
   coerce(options);
@@ -58,13 +97,15 @@ async function main() {
   if (command === "plan") {
     result = engine.planWorkflow(options);
   } else if (command === "run") {
-    result = await engine.runWorkflow(options);
+    result = await runCancellable(engine.runWorkflow, options);
+  } else if (command === "pipeline") {
+    result = await runCancellable(engine.runPipelineSpec, options);
   } else if (command === "resume") {
-    result = await engine.resumeWorkflow(options);
+    result = await runCancellable(engine.resumeWorkflow, options);
   } else if (command === "status") {
     result = await engine.readWorkflow(options);
   } else {
-    throw new Error(`Unknown command: ${command} (expected plan|run|resume|status)`);
+    throw new Error(`Unknown command: ${command} (expected plan|run|pipeline|resume|status)`);
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
