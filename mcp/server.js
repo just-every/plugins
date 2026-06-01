@@ -2,6 +2,11 @@
 "use strict";
 
 const engine = require("../scripts/ultracode-engine");
+// Require the runner DIRECTLY (not via engine) so the script contract stays
+// clean and we avoid relying on the engine's lazy re-export. The runner
+// top-level-requires the engine; the engine must NOT top-level-require the
+// runner — so requiring the runner here is cycle-free.
+const scriptRunner = require("../scripts/ultracode-script-runner");
 
 const PROTOCOL_VERSION = "2025-06-18";
 
@@ -240,6 +245,29 @@ const tools = [
         state_path: { type: "string" }
       }
     }
+  },
+  {
+    name: "ultracode_script",
+    description:
+      "Run an imperative Ultracode workflow script — the Codex analogue of Claude Code's Workflow tool. " +
+      "The script is plain async JavaScript with a bound scope (agent, spawnWorker, parallel, pipeline, " +
+      "loopUntilDry, adversarialVerify, log, phase, workflow, budget, args) and produces a journaled record. " +
+      "SECURITY: this runs ARBITRARY Node.js IN-PROCESS with full host privileges and is NOT sandboxed. It is " +
+      "DISABLED unless the environment variable ULTRACODE_ALLOW_SCRIPT=1 is set for the MCP server process. " +
+      "Prefer passing a file `path` you control over inline `source`.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        path: { type: "string", description: "Path to a workflow script file (preferred over inline source)." },
+        source: { type: "string", description: "Inline workflow script source (only accepted when ULTRACODE_ALLOW_SCRIPT=1)." },
+        args: { type: "object", description: "Arbitrary arguments object exposed to the script as `args`." },
+        cwd: { type: "string", description: "Workspace directory for child workers." },
+        concurrency: { type: "integer", minimum: 1, description: "Max simultaneous Codex subprocesses." },
+        budget_tokens: { type: "integer", minimum: 0, description: "Optional total token ceiling for spawns." },
+        max_agents: { type: "integer", minimum: 1, description: "Lifetime cap on spawned workers for this run." }
+      }
+    }
   }
 ];
 
@@ -321,6 +349,24 @@ async function callTool(name, args, onEvent) {
   }
   if (name === "ultracode_status") {
     return contentResult(await engine.readWorkflow(args || {}));
+  }
+  if (name === "ultracode_script") {
+    // SECURITY GATE (read at call time so tests can toggle it): ultracode_script
+    // runs ARBITRARY Node.js in-process with full host privileges and is NOT a
+    // sandbox. It is disabled unless ULTRACODE_ALLOW_SCRIPT=1. When disabled we
+    // return an isError content result (NOT a JSON-RPC error) explaining how to
+    // enable — we never throw and never spawn anything.
+    if (process.env.ULTRACODE_ALLOW_SCRIPT !== "1") {
+      return contentResult(
+        "ultracode_script is disabled. This tool runs ARBITRARY Node.js in-process with full host " +
+          "privileges and is NOT sandboxed. To enable, set environment variable ULTRACODE_ALLOW_SCRIPT=1 " +
+          "for the MCP server process, and prefer passing a file `path` you control over inline `source`.",
+        true
+      );
+    }
+    return contentResult(
+      await scriptRunner.runScript({ ...(args || {}), ...(onEvent ? { on_event: onEvent } : {}) })
+    );
   }
   return contentResult(`Unknown Ultracode tool: ${name}`, true);
 }

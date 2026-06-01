@@ -2038,6 +2038,16 @@ async function resumeWorkflow(input = {}) {
   if (!record || record.status === "missing") {
     throw new Error("No Ultracode workflow state to resume.");
   }
+  // A kind:'script' record (from runScript) has no per-worker steps to re-run:
+  // a script is an arbitrary imperative body, not a step DAG. Rather than try to
+  // re-derive role/spec workers (which would throw on the missing `task`), resume
+  // degrades to a clear no-op that returns the record unchanged.
+  if (record.kind === "script") {
+    return {
+      ...record,
+      message: "Script workflows are not step-resumable; re-run the script to produce a fresh record."
+    };
+  }
   const force = new Set(input.force_steps || []);
   const ctx = createContext({
     workflowId: record.id,
@@ -2682,6 +2692,12 @@ module.exports = {
   runWorkflow,
   runPipelineSpec,
   resumeWorkflow,
+  // Convenience re-export of the opt-in script runner. This is a LAZY wrapper:
+  // the runner top-level-requires this engine, so the engine must NOT top-level
+  // require the runner (that would form a require cycle and hand the runner a
+  // half-initialized engine). Requiring it at call time breaks the cycle. CLI/
+  // MCP still require the runner directly; this exists purely for convenience.
+  runScript: (...args) => require("./ultracode-script-runner").runScript(...args),
   readWorkflow,
   compactWorkflow,
   stateDir,

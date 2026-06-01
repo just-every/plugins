@@ -2,6 +2,10 @@
 "use strict";
 
 const engine = require("./ultracode-engine");
+// Require the runner DIRECTLY (not via engine) to keep the script contract
+// clean and cycle-free (the runner requires the engine; the engine never
+// top-level-requires the runner).
+const scriptRunner = require("./ultracode-script-runner");
 
 const NUMERIC_KEYS = new Set([
   "workers",
@@ -13,12 +17,20 @@ const NUMERIC_KEYS = new Set([
   "base_delay_ms",
   "max_delay_ms"
 ]);
-const JSON_KEYS = new Set(["workers_spec", "force_steps", "steps"]);
+const JSON_KEYS = new Set(["workers_spec", "force_steps", "steps", "args"]);
 
 function parseArgs(argv) {
   const [command = "plan", ...rest] = argv;
   const options = {};
-  for (let index = 0; index < rest.length; index += 1) {
+  let index = 0;
+  // A single leading positional (before any --flag) is collected as
+  // options._positional. Existing commands never pass one, so their parse is
+  // byte-identical; the `script` command maps it to a script `path`.
+  if (rest.length > 0 && !rest[0].startsWith("--")) {
+    options._positional = rest[0];
+    index = 1;
+  }
+  for (; index < rest.length; index += 1) {
     const arg = rest[index];
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected argument: ${arg}`);
@@ -104,8 +116,18 @@ async function main() {
     result = await runCancellable(engine.resumeWorkflow, options);
   } else if (command === "status") {
     result = await engine.readWorkflow(options);
+  } else if (command === "script") {
+    // `script` runs an imperative workflow script. SECURITY: this executes
+    // ARBITRARY Node.js in-process with full host privileges and is NOT
+    // sandboxed — only run scripts you trust (same trust as `node <file>`).
+    // Accept a positional <path>, or --path / --source (--args is JSON).
+    if (options._positional !== undefined && options.path === undefined) {
+      options.path = options._positional;
+    }
+    delete options._positional;
+    result = await runCancellable(scriptRunner.runScript, options);
   } else {
-    throw new Error(`Unknown command: ${command} (expected plan|run|pipeline|resume|status)`);
+    throw new Error(`Unknown command: ${command} (expected plan|run|pipeline|resume|status|script)`);
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
