@@ -6,10 +6,10 @@ This repository is a marketplace source. Add it to Codex once, then install or u
 
 ## Plugins
 
-| Plugin | Purpose |
-| --- | --- |
-| [Ultracode](https://github.com/just-every/plugin-ultracode) | Parallel Codex worker workflows for investigation, planning, review, pipelines, and scripted orchestration. |
-| [Auto Review](https://github.com/just-every/plugin-auto-review) | Hook-driven review of Codex edits at turn stop with strict schema-validated reviewer output. |
+| Icon | Plugin | Purpose |
+| --- | --- | --- |
+| <img src="https://raw.githubusercontent.com/just-every/plugin-ultracode/main/assets/icon.png" alt="Ultracode icon" width="32" height="32"> | [Ultracode](https://github.com/just-every/plugin-ultracode) | Parallel Codex worker workflows for investigation, planning, review, pipelines, and scripted orchestration. |
+| <img src="https://raw.githubusercontent.com/just-every/plugin-auto-review/main/assets/icon.png" alt="Auto Code Review icon" width="32" height="32"> | [Auto Code Review](https://github.com/just-every/plugin-auto-review) | Hook-driven review of Codex edits at turn stop with strict schema-validated reviewer output. |
 
 ## Marketplace Layout
 
