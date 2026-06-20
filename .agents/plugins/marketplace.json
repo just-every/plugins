@@ -29,6 +29,19 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Developer Tools"
+    },
+    {
+      "name": "hermes-tweet",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Xquik-dev/hermes-tweet.git",
+        "ref": "master"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }
