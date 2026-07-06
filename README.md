@@ -2,7 +2,7 @@
 
 Codex plugin marketplace for Just Every.
 
-This repository is a marketplace source. Add it to Codex once, then install or update the plugins exposed by the catalog.
+This repository is a marketplace source for plugins published by Just Every. Add it to Codex once, then install or update the plugins exposed by the catalog.
 
 ## Plugins
 
@@ -19,7 +19,7 @@ This repository is a marketplace source. Add it to Codex once, then install or u
 .agents/plugins/marketplace.json
 ```
 
-The marketplace id is `just-every`. Plugin entries point at their source repositories, so this repo stays a small catalog while each plugin owns its implementation, tests, and releases.
+The marketplace id is `just-every`. Plugin entries point at Just Every-owned source repositories, so this repo stays a small catalog while each plugin owns its implementation, tests, and releases.
 
 ## Install
 
