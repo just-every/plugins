@@ -12,7 +12,7 @@ This repository is a marketplace source for plugins published by Just Every. Add
 | <img src="https://raw.githubusercontent.com/just-every/plugin-auto-review/main/assets/icon.png" alt="Auto Code Review icon" width="32" height="32"> | [Auto Code Review](https://github.com/just-every/plugin-auto-review) | Hook-driven review of Codex edits at turn stop with strict schema-validated reviewer output. |
 |  | [Peer](https://github.com/just-every/plugin-peer) | Fable-powered prompt peer review that injects an amended working brief through Codex hooks. |
 | <img src="https://raw.githubusercontent.com/just-every/plugin-loop/main/assets/icon.png" alt="Loop icon" width="32" height="32"> | [Loop](https://github.com/just-every/plugin-loop) | Ultracode worker orchestration plus Fable prompt and Stop-hook course correction. |
-| <img src="https://raw.githubusercontent.com/just-every/12ui-plugin/main/assets/12ui-icon.png" alt="12UI Design icon" width="32" height="32"> | [12UI Design](https://github.com/just-every/12ui-plugin) | Search design references, draft visual directions, branch complete interfaces, and convert finished designs into production-ready output. |
+| <img src="https://raw.githubusercontent.com/just-every/12ui-plugin/main/assets/12ui-icon.png" alt="12ui Design icon" width="32" height="32"> | [12ui Design](https://github.com/just-every/12ui-plugin) | Search design references, draft visual directions, branch complete interfaces, and convert finished designs into production-ready output. |
 
 ## Marketplace Layout
 
