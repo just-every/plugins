@@ -55,6 +55,19 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Developer Tools"
+    },
+    {
+      "name": "12ui-design",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/just-every/12ui-plugin.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Design"
     }
   ]
 }
